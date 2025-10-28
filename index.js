@@ -1,9 +1,9 @@
-const { Telegraf, Markup, session } = require('telegraf');
+const { Telegraf, session } = require('telegraf');
 const {
   makeWASocket,
   useMultiFileAuthState,
   DisconnectReason,
-  fetchLatestBaileysVersion
+  fetchLatestWaWebVersion
 } = require('@whiskeysockets/baileys');
 const fs = require('fs');
 const path = require('path');
@@ -54,12 +54,15 @@ function isOwner(id) {
   }
 }
 
-// Start WhatsApp session (creates socket)
+// Start WhatsApp session (creates socket) — uses latest wa-web version
 async function startSesi({ printQRInTerminal = false } = {}) {
   if (sock && sock.user) return sock;
 
   const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
-  const { version } = await fetchLatestBaileysVersion();
+
+  // fetch latest WA Web version (Baileys new util)
+  const { version, isLatest } = await fetchLatestWaWebVersion();
+  console.log('Using wa-web version', version, 'isLatest:', isLatest);
 
   const conn = makeWASocket({
     version,
@@ -75,7 +78,6 @@ async function startSesi({ printQRInTerminal = false } = {}) {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
-      // store latest qr on socket object for handlers to use
       conn.latestQR = qr;
     }
 
@@ -108,14 +110,6 @@ const requireOwner = (ctx, next) => {
   if (!isOwner(ctx.from.id)) return ctx.reply('❌ Hanya owner yang bisa menjalankan perintah ini.');
   return next();
 };
-const requireAdmin = (ctx, next) => {
-  if (!adminUsers.includes(String(ctx.from.id))) return ctx.reply('❌ Anda bukan admin.');
-  return next();
-};
-const requirePremium = (ctx, next) => {
-  if (!premiumUsers.includes(String(ctx.from.id))) return ctx.reply('❌ Hanya pengguna premium.');
-  return next();
-};
 
 // Bot commands
 bot.start((ctx) => {
@@ -126,20 +120,16 @@ bot.start((ctx) => {
 
 bot.command('addpairing', requireOwner, async (ctx) => {
   try {
-    // start session and ensure sock exists
     await startSesi();
-    // if already connected
     if (isConnected && sock && sock.user) return ctx.reply('WhatsApp sudah terhubung.');
 
     const sent = await ctx.reply('Menunggu QR. Akan dikirimkan jika tersedia...');
 
-    // If we already have a QR (recent), send it
     if (sock && sock.latestQR) {
       const buffer = await QR.toBuffer(sock.latestQR, { width: 400 });
       await ctx.telegram.sendPhoto(ctx.chat.id, { source: buffer }, { caption: 'Scan QR di atas dengan akun WhatsApp yang akan dipair.' });
     }
 
-    // temporary listener for qr and connection events
     const onUpdate = async (update) => {
       try {
         if (update.qr) {
@@ -163,11 +153,7 @@ bot.command('addpairing', requireOwner, async (ctx) => {
     };
 
     sock.ev.on('connection.update', onUpdate);
-
-    // safety timeout: remove listener after 2 minutes
-    setTimeout(() => {
-      try { sock.ev.off('connection.update', onUpdate); } catch(e){}
-    }, 2 * 60 * 1000);
+    setTimeout(() => { try { sock.ev.off('connection.update', onUpdate); } catch(e){} }, 2 * 60 * 1000);
 
   } catch (e) {
     console.error('addpairing error', e);
@@ -184,55 +170,6 @@ bot.command('delsesi', requireOwner, async (ctx) => {
 bot.command('restart', requireOwner, async (ctx) => {
   await ctx.reply('Restarting...');
   setTimeout(() => process.exit(0), 1000);
-});
-
-// Admin / premium management
-bot.command('addadmin', requireOwner, (ctx) => {
-  const parts = ctx.message.text.split(/\s+/);
-  if (parts.length < 2) return ctx.reply('Contoh: /addadmin 123456789');
-  const id = parts[1].trim();
-  if (!adminUsers.includes(id)) {
-    adminUsers.push(id);
-    saveJSON(adminFile, adminUsers);
-    return ctx.reply(`✅ ${id} ditambahkan sebagai admin.`);
-  }
-  return ctx.reply('User sudah admin.');
-});
-
-bot.command('deladmin', requireOwner, (ctx) => {
-  const parts = ctx.message.text.split(/\s+/);
-  if (parts.length < 2) return ctx.reply('Contoh: /deladmin 123456789');
-  const id = parts[1].trim();
-  adminUsers = adminUsers.filter(x => x !== id);
-  saveJSON(adminFile, adminUsers);
-  return ctx.reply(`✅ ${id} dihapus dari admin.`);
-});
-
-bot.command('addprem', requireOwner, (ctx) => {
-  const parts = ctx.message.text.split(/\s+/);
-  if (parts.length < 2) return ctx.reply('Contoh: /addprem 123456789');
-  const id = parts[1].trim();
-  if (!premiumUsers.includes(id)) {
-    premiumUsers.push(id);
-    saveJSON(premiumFile, premiumUsers);
-    return ctx.reply(`✅ ${id} ditambahkan sebagai premium.`);
-  }
-  return ctx.reply('User sudah premium.');
-});
-
-bot.command('delprem', requireOwner, (ctx) => {
-  const parts = ctx.message.text.split(/\s+/);
-  if (parts.length < 2) return ctx.reply('Contoh: /delprem 123456789');
-  const id = parts[1].trim();
-  premiumUsers = premiumUsers.filter(x => x !== id);
-  saveJSON(premiumFile, premiumUsers);
-  return ctx.reply(`✅ ${id} dihapus dari premium.`);
-});
-
-// Simple check commands
-bot.command('cekprem', (ctx) => {
-  const id = String(ctx.from.id);
-  return ctx.reply(premiumUsers.includes(id) ? '✅ Anda premium.' : '❌ Anda bukan premium.');
 });
 
 // Launch bot
